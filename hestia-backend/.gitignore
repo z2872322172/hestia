@@ -1,0 +1,45 @@
+HELP.md
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### IntelliJ IDEA ###
+.idea/
+*.iws
+*.iml
+*.ipr
+
+### Eclipse ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### VS Code ###
+.vscode/
+
+### 本地环境变量与密钥 ###
+# .env 只用于本机注入环境变量，禁止提交（docs/05 第 15 节）
+.env
+*.local.env
+
+# 本地构建产物路径记录，机器相关，禁止提交
+.dsh-jar-path
+
+### 运行产物 ###
+logs/
+*.log
+*.pid
+
+### 上传文件与导出文件 ###
+uploads/
+exports/
+
+### OS ###
+.DS_Store
+Thumbs.db
+desktop.ini

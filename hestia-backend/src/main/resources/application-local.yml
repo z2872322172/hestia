@@ -1,0 +1,26 @@
+# ============================================================================
+# local：本机开发，连接 Docker Compose 启动的 MySQL / Redis / MinIO / RocketMQ
+# 允许 Mock 地图与 smoke 接口
+# ============================================================================
+logging:
+  level:
+    root: INFO
+    com.housekeeping.platform: DEBUG
+    # 开发期打开 SQL 日志，便于核对迁移与条件更新
+    com.housekeeping.platform.infrastructure.persistence: DEBUG
+
+app:
+  security:
+    smoke-api-enabled: true
+    jwt:
+      # 仅供本机开发使用；生产必须通过 JWT_SECRET 注入真实密钥
+      secret: ${JWT_SECRET:local-dev-only-jwt-secret-please-change-0123456789}
+    # 本机开发用的字段加密密钥；生产必须通过 FIELD_KEY 注入
+    field-key: ${FIELD_KEY:local-dev-only-field-key-please-change}
+  map:
+    provider: ${MAP_PROVIDER:mock}
+
+management:
+  endpoint:
+    health:
+      show-details: always

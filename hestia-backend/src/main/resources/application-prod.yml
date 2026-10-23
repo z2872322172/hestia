@@ -1,0 +1,44 @@
+# ============================================================================
+# prod：生产口径
+# 1. 关闭所有 smoke 接口
+# 2. 不暴露健康明细与指标细节
+# 3. 所有密钥必须由环境变量注入，缺失即启动失败（不使用开发默认值）
+# ============================================================================
+logging:
+  level:
+    root: WARN
+    com.housekeeping.platform: INFO
+
+spring:
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+
+app:
+  security:
+    smoke-api-enabled: false
+    jwt:
+      # 无默认值：缺失即启动失败，杜绝"生产用了开发密钥"
+      secret: ${JWT_SECRET}
+    # 敏感字段加密密钥，同样无默认值
+    field-key: ${FIELD_KEY}
+  map:
+    provider: ${MAP_PROVIDER:amap}
+    amap:
+      web-service-key: ${AMAP_WEB_SERVICE_KEY}
+  storage:
+    access-key: ${MINIO_ACCESS_KEY}
+    secret-key: ${MINIO_SECRET_KEY}
+  rocketmq:
+    endpoints: ${ROCKETMQ_ENDPOINT}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+      show-components: never

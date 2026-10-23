@@ -1,0 +1,198 @@
+# ============================================================================
+# Hestia 后端公共配置
+# 只在 application-{local,test,demo,prod}.yml 中覆盖差异部分。
+# 禁止在本文件写真实密钥：所有敏感项一律从环境变量读取（docs/05 第 15 节）。
+# ============================================================================
+server:
+  port: 8080
+  shutdown: graceful
+  servlet:
+    encoding:
+      charset: UTF-8
+      force: true
+
+spring:
+  application:
+    name: hestia-backend
+  profiles:
+    # 未显式指定 profile 时按 local 启动；显式 --spring.profiles.active 优先
+    default: local
+  main:
+    banner-mode: off
+  jackson:
+    time-zone: Asia/Shanghai
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+      fail-on-empty-beans: false
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 25MB
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+
+  # ---- 数据源 ----
+  datasource:
+    url: ${DB_URL:jdbc:mysql://localhost:3306/hestia?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
+    username: ${DB_USERNAME:hestia}
+    password: ${DB_PASSWORD:hestia-dev-secret}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      pool-name: HestiaHikariPool
+      minimum-idle: 2
+      maximum-pool-size: 10
+      connection-timeout: 5000
+      validation-timeout: 3000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+
+  # ---- Flyway：表结构唯一入口，禁止 ddl-auto / 自动建表 ----
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    encoding: UTF-8
+    baseline-on-migrate: false
+    validate-on-migrate: true
+    clean-disabled: true
+
+  # ---- Redis ----
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      timeout: 3s
+      connect-timeout: 3s
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 1
+          max-wait: 2s
+
+  cache:
+    type: redis
+    redis:
+      time-to-live: 10m
+      cache-null-values: false
+      key-prefix: "app:cache:"
+      use-key-prefix: true
+
+# ---- MyBatis-Plus：仅做 CRUD 与分页，不自动建表 ----
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: com.housekeeping.platform
+  configuration:
+    map-underscore-to-camel-case: true
+    cache-enabled: false
+    default-enum-type-handler: org.apache.ibatis.type.EnumTypeHandler
+  global-config:
+    banner: false
+    db-config:
+      id-type: auto
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+# ---- 应用自定义配置 ----
+app:
+  feature:
+    # 关闭后不装配任何依赖数据源的 Bean，用于无基础设施环境下的上下文与契约测试
+    persistence-enabled: true
+  security:
+    # 生产环境必须为 false：关闭 /api/v1/system/smoke/**
+    smoke-api-enabled: true
+    cors-allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}
+    jwt:
+      # 必须由环境变量提供，长度至少 32 字节；留空则启动失败（不允许弱密钥兜底）
+      secret: ${JWT_SECRET:}
+      access-token-ttl: 90m
+      issuer: hestia-platform
+    # 敏感字段加密密钥（证书编号等）。留空时加密能力不可用，
+    # 提交证书编号会被明确拒绝——不会悄悄退化成明文存储。
+    field-key: ${FIELD_KEY:}
+    login:
+      # 连续失败 5 次锁定 15 分钟（docs/modules/01 第 7.3 节）
+      max-failed-attempts: 5
+      lock-minutes: 15
+      invitation-ttl-hours: 48
+  customer:
+    # 每个客户的有效地址上限（docs/modules/02 第 7.2 节）
+    address-limit: 20
+  booking:
+    # 待支付订单支付截止分钟数（docs/modules/07 第 13 节）
+    payment-timeout-minutes: 15
+    # 免费取消小时数与临近取消费用（docs/modules/07 第 10.3 节，下单时固化进订单快照）
+    free-cancel-hours: 24
+    late-cancel-fee-rate: 0.3
+    late-cancel-fee-amount: 50
+    # 支付超时扫描（BookingPaymentTimeoutJob）
+    timeout-sweep-interval-ms: 30000
+    timeout-sweep-batch-size: 50
+  outbox:
+    relay:
+      enabled: true
+      batch-size: 20
+      fixed-delay-ms: 2000
+      initial-delay-ms: 5000
+      # 单条事件最大投递次数，超过后置为 DEAD 等待人工处理
+      max-retry: 8
+      # 退避基数：第 n 次重试等待 base * 2^(n-1) 秒，上限 10 分钟
+      retry-backoff-seconds: 15
+  rocketmq:
+    enabled: true
+    # gRPC 端点，指向 RocketMQ Proxy（默认 8081）
+    endpoints: ${ROCKETMQ_ENDPOINT:localhost:8081}
+    namespace: ${ROCKETMQ_NAMESPACE:}
+    request-timeout: 5s
+    topics:
+      tech-event: ${ROCKETMQ_TECH_TOPIC:HK_TECH_EVENT}
+    consumer-groups:
+      tech-smoke: ${ROCKETMQ_TECH_CONSUMER_GROUP:GID_TECH_SMOKE}
+    # Consumer 启动失败时的重试间隔（Broker 尚未就绪时不让应用启动失败）
+    consumer-start-retry-ms: 30000
+  storage:
+    enabled: true
+    endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+    access-key: ${MINIO_ACCESS_KEY:minioadmin}
+    secret-key: ${MINIO_SECRET_KEY:minioadmin}
+    public-bucket: ${MINIO_PUBLIC_BUCKET:housekeeping-dev-public}
+    private-bucket: ${MINIO_PRIVATE_BUCKET:housekeeping-dev-private}
+    # 预签名 URL 有效期，5 至 15 分钟（docs/04 第 6.4 节）
+    presigned-expiry-seconds: 900
+    max-upload-size-bytes: 20971520
+  map:
+    provider: ${MAP_PROVIDER:mock}
+    amap:
+      web-service-key: ${AMAP_WEB_SERVICE_KEY:}
+      base-url: https://restapi.amap.com
+      connect-timeout: 2s
+      read-timeout: 3s
+
+# ---- Actuator ----
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+      show-components: always
+  health:
+    # RocketMQ / MinIO 的健康状态由自定义 HealthIndicator 提供
+    diskspace:
+      enabled: false
+
+# ---- Swagger / OpenAPI ----
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+  default-produces-media-type: application/json

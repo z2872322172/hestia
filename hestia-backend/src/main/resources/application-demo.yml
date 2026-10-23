@@ -1,0 +1,26 @@
+# ============================================================================
+# demo：答辩演示环境
+# 与 local 使用同一套 Docker 基础设施，后续批次在此 profile 初始化演示数据；
+# 危险 smoke 接口保留（便于现场演示链路），但不加载任何默认生产账号。
+# ============================================================================
+logging:
+  level:
+    root: INFO
+    com.housekeeping.platform: INFO
+
+app:
+  security:
+    smoke-api-enabled: true
+    jwt:
+      # 演示环境同样要求注入；未注入时退回演示专用密钥，避免答辩现场因缺环境变量起不来
+      secret: ${JWT_SECRET:demo-only-jwt-secret-please-change-0123456789}
+    # 同上：演示环境允许退回演示密钥，生产不允许
+    field-key: ${FIELD_KEY:demo-only-field-key-please-change-0123}
+  map:
+    # 演示优先使用真实高德；未配置 Key 时自动退回 Mock
+    provider: ${MAP_PROVIDER:mock}
+
+management:
+  endpoint:
+    health:
+      show-details: always

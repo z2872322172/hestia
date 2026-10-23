@@ -1,0 +1,7 @@
+### AI 工具本地状态 ###
+.workbuddy-ai/
+
+### 通用排除 ###
+.DS_Store
+Thumbs.db
+desktop.ini
