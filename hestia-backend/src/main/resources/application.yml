@@ -149,6 +149,7 @@ app:
     request-timeout: 5s
     topics:
       tech-event: ${ROCKETMQ_TECH_TOPIC:HK_TECH_EVENT}
+      booking-event: ${ROCKETMQ_BOOKING_TOPIC:HK_BOOKING_EVENT}
     consumer-groups:
       tech-smoke: ${ROCKETMQ_TECH_CONSUMER_GROUP:GID_TECH_SMOKE}
     # Consumer 启动失败时的重试间隔（Broker 尚未就绪时不让应用启动失败）

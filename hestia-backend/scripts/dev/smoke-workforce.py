@@ -127,7 +127,7 @@ def new_phone(prefix: str) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="批次 2 人员模块冒烟验证")
-    parser.add_argument("--base-url", default="http://127.0.0.1:18080")
+    parser.add_argument("--base-url", default="http://127.0.0.1:8080")
     parser.add_argument("--operator-phone", default="13900000001")
     parser.add_argument("--operator-password", default="Hestia2026")
     parser.add_argument("--worker-password", default="Hestia2026")

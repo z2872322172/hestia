@@ -8,6 +8,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 import java.time.LocalDate;
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -78,4 +79,27 @@ public interface WorkerCertificateMapper extends BaseMapper<WorkerCertificateEnt
             + "AND expires_at BETWEEN #{from} AND #{to} ORDER BY expires_at ASC")
     List<WorkerCertificateEntity> selectExpiringBetween(@Param("from") LocalDate from,
                                                         @Param("to") LocalDate to);
+
+    /**
+     * 统计证书即将到期且服务区域命中的去重人员数（运营告警用，docs/modules/13 第 5 节）。
+     *
+     * <p>区域归属来自 {@code worker_service_area}（人员自己的关系表，只读）；
+     * 同一人员多个区域命中只计一次。areaIds 为空 = 不限区域（ADMIN）。</p>
+     *
+     * @param areaIds 授权服务区域 ID 集合（可空 = 不限）
+     * @param from    起始日（含）
+     * @param to      截止日（含）
+     * @return 去重人员数
+     */
+    @Select("<script>SELECT COUNT(DISTINCT wc.worker_id) FROM worker_certificate wc "
+            + "JOIN worker_service_area wsa ON wsa.worker_id = wc.worker_id "
+            + "AND wsa.status = 'ACTIVE' "
+            + "WHERE wc.valid_status = 'VALID' AND wc.expires_at BETWEEN #{from} AND #{to} "
+            + "<if test='areaIds != null and areaIds.size() > 0'>"
+            + "AND wsa.service_area_id IN "
+            + "<foreach collection='areaIds' item='id' open='(' separator=',' close=')'>#{id}</foreach>"
+            + "</if></script>")
+    long countExpiringWorkers(@Param("areaIds") Collection<Long> areaIds,
+                              @Param("from") LocalDate from,
+                              @Param("to") LocalDate to);
 }

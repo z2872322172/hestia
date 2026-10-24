@@ -7,13 +7,14 @@
     演示与生产环境必须显式创建，避免"靠自动创建"导致 Topic 参数不一致。
 
 .NOTES
-    技术阶段只创建 HK_TECH_EVENT；订单、派单、支付 Topic 在对应批次加入。
+    批次 3 起创建 HK_TECH_EVENT 与订单事件 Topic HK_BOOKING_EVENT；
+    派单、支付等其余 Topic 在对应批次加入。
 #>
 $ErrorActionPreference = 'Stop'
 
 $nameserver = 'rocketmq-nameserver:9876'
 $cluster = 'DefaultCluster'
-$topics = @('HK_TECH_EVENT')
+$topics = @('HK_TECH_EVENT', 'HK_BOOKING_EVENT')
 
 foreach ($topic in $topics) {
     Write-Host "创建 Topic $topic ..." -NoNewline

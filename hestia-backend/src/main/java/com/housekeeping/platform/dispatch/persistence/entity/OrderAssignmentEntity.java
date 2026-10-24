@@ -58,6 +58,9 @@ public class OrderAssignmentEntity {
 
     private String rejectReasonText;
 
+    /** 派单/改派原因：自动改派写触发码，手工操作写运营填写的原因文本。 */
+    private String dispatchReason;
+
     /** 改派时指向被替换的分配记录。 */
     private Long replacedAssignmentId;
 

@@ -8,6 +8,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 派单任务 Mapper。
@@ -66,4 +67,110 @@ public interface DispatchJobMapper extends BaseMapper<DispatchJobEntity> {
      */
     @Select("SELECT * FROM dispatch_job WHERE booking_id = #{bookingId}")
     DispatchJobEntity selectByBookingId(@Param("bookingId") Long bookingId);
+
+    /**
+     * 按任务单号查询。
+     *
+     * @param jobNo 任务单号
+     * @return 任务或 null
+     */
+    @Select("SELECT * FROM dispatch_job WHERE job_no = #{jobNo}")
+    DispatchJobEntity selectByJobNo(@Param("jobNo") String jobNo);
+
+    /**
+     * 人员接单：PENDING_ACCEPT → ACCEPTED（docs/modules/08 第 8.3 节）。
+     *
+     * @param jobId 任务 ID
+     * @return 影响行数，0 表示状态已变（已进入改派/取消）
+     */
+    @Update("UPDATE dispatch_job SET status = 'ACCEPTED', version = version + 1 "
+            + "WHERE id = #{jobId} AND status = 'PENDING_ACCEPT'")
+    int markAccepted(@Param("jobId") Long jobId);
+
+    /**
+     * 进入改派：PENDING_ACCEPT → REASSIGNING（拒单/超时后触发，第 8.4 节）。
+     *
+     * @param jobId 任务 ID
+     * @return 影响行数，0 表示状态已变
+     */
+    @Update("UPDATE dispatch_job SET status = 'REASSIGNING', version = version + 1 "
+            + "WHERE id = #{jobId} AND status = 'PENDING_ACCEPT'")
+    int markReassigningFromPending(@Param("jobId") Long jobId);
+
+    /**
+     * 手工改派已接单任务：ACCEPTED → REASSIGNING（docs/modules/08 第 9 节）。
+     *
+     * @param jobId 任务 ID
+     * @return 影响行数，0 表示状态已变
+     */
+    @Update("UPDATE dispatch_job SET status = 'REASSIGNING', version = version + 1 "
+            + "WHERE id = #{jobId} AND status = 'ACCEPTED'")
+    int markReassigningFromAccepted(@Param("jobId") Long jobId);
+
+    /**
+     * 改派落到新候选：REASSIGNING → PENDING_ACCEPT，更新当前分配与尝试次数。
+     *
+     * <p>条件更新同时是自动改派的并发防护：两条链路同时改派时只有一条成功，
+     * 失败方影响行数 0 抛异常整体回滚。</p>
+     *
+     * @param jobId          任务 ID
+     * @param assignmentId   新分配记录 ID
+     * @param lastAssignedAt 最近分配时间
+     * @return 影响行数，0 表示状态已变
+     */
+    @Update("UPDATE dispatch_job SET status = 'PENDING_ACCEPT', "
+            + "current_assignment_id = #{assignmentId}, last_assigned_at = #{lastAssignedAt}, "
+            + "attempt_count = attempt_count + 1, version = version + 1 "
+            + "WHERE id = #{jobId} AND status = 'REASSIGNING'")
+    int markPendingAccept(@Param("jobId") Long jobId,
+                          @Param("assignmentId") Long assignmentId,
+                          @Param("lastAssignedAt") LocalDateTime lastAssignedAt);
+
+    /**
+     * 手工派单进入执行：MANUAL_REQUIRED → REASSIGNING，
+     * 随后由 {@link #markPendingAccept} 落到指定人员（统一改派路径）。
+     *
+     * @param jobId 任务 ID
+     * @return 影响行数，0 表示状态已变
+     */
+    @Update("UPDATE dispatch_job SET status = 'REASSIGNING', version = version + 1 "
+            + "WHERE id = #{jobId} AND status = 'MANUAL_REQUIRED'")
+    int markReassigningFromManual(@Param("jobId") Long jobId);
+
+    /**
+     * 无候选可派：REASSIGNING → MANUAL_REQUIRED 并记录原因（第 8.4 节）。
+     *
+     * @param jobId  任务 ID
+     * @param reason 原因（可空）
+     * @return 影响行数，0 表示状态已变
+     */
+    @Update("UPDATE dispatch_job SET status = 'MANUAL_REQUIRED', "
+            + "manual_required_reason = #{reason}, version = version + 1 "
+            + "WHERE id = #{jobId} AND status = 'REASSIGNING'")
+    int markManualRequired(@Param("jobId") Long jobId, @Param("reason") String reason);
+
+    /**
+     * 运营任务队列分页（状态可空）。
+     *
+     * @param status 状态过滤，可空
+     * @param offset 偏移
+     * @param size   每页大小
+     * @return 任务列表（更新时间倒序）
+     */
+    @Select("<script>SELECT * FROM dispatch_job "
+            + "<where><if test='status != null'>status = #{status}</if></where> "
+            + "ORDER BY updated_at DESC, id DESC LIMIT #{size} OFFSET #{offset}</script>")
+    List<DispatchJobEntity> selectPage(@Param("status") String status,
+                                       @Param("offset") int offset,
+                                       @Param("size") int size);
+
+    /**
+     * 运营任务队列总数（状态可空）。
+     *
+     * @param status 状态过滤，可空
+     * @return 总数
+     */
+    @Select("<script>SELECT COUNT(*) FROM dispatch_job "
+            + "<where><if test='status != null'>status = #{status}</if></where></script>")
+    long count(@Param("status") String status);
 }

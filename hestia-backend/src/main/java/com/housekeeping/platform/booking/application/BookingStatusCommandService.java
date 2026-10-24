@@ -1,5 +1,6 @@
 package com.housekeeping.platform.booking.application;
 
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.housekeeping.platform.booking.application.view.BookingDetailView;
 import com.housekeeping.platform.booking.domain.BookingStatus;
 import com.housekeeping.platform.booking.persistence.entity.BookingOrderEntity;
@@ -39,40 +40,26 @@ public class BookingStatusCommandService {
 
     private final BookingQueryService queryService;
 
+    private final BookingEventPublisher eventPublisher;
+
     public BookingStatusCommandService(BookingOrderMapper orderMapper,
                                        BookingStatusLogMapper statusLogMapper,
                                        WorkerSlotReservationService slotReservation,
                                        DispatchApplicationService dispatchService,
-                                       BookingQueryService queryService) {
+                                       BookingQueryService queryService,
+                                       BookingEventPublisher eventPublisher) {
         this.orderMapper = orderMapper;
         this.statusLogMapper = statusLogMapper;
         this.slotReservation = slotReservation;
         this.dispatchService = dispatchService;
         this.queryService = queryService;
-    }
-
-    /**
-     * 支付成功确认（支付回调内部命令，docs/modules/07 第 18.4 节）。
-     *
-     * @param orderNo    订单号
-     * @param paidAmount 实付金额
-     * @param paidAt     支付时间
-     * @return 确认后的订单详情
-     * @throws BusinessException 订单不存在 / 金额不一致 / 状态冲突
-     */
-    @Transactional
-    public BookingDetailView markPaid(String orderNo, BigDecimal paidAmount, LocalDateTime paidAt) {
-        BookingOrderEntity order = orderMapper.selectByOrderNo(orderNo);
-        if (order == null) {
-            throw new BusinessException(ErrorCode.BOOKING_NOT_FOUND);
-        }
-        return markPaid(order, paidAmount, paidAt);
+        this.eventPublisher = eventPublisher;
     }
 
     /**
      * 支付成功确认（按订单 ID，支付模块回调内部命令）。
      *
-     * <p>payment_record 只存 booking_id，回调侧按 ID 回查订单号后复用统一链路。</p>
+     * <p>payment_record 只存 booking_id，回调侧按 ID 回查订单后复用统一链路。</p>
      *
      * @param bookingId  订单 ID
      * @param paidAmount 实付金额
@@ -119,6 +106,8 @@ public class BookingStatusCommandService {
         logEntity.setToStatus(BookingStatus.CONFIRMED.name());
         logEntity.setOperationSource("SYSTEM");
         statusLogMapper.insert(logEntity);
+        // 事件与支付确认同一事务落 outbox（docs/04 第 10.5 节）；重放路径已提前返回不会重复发
+        eventPublisher.publishPaid(order, paidAmount, paidAt, workerId);
         BookingOrderEntity confirmed = orderMapper.selectById(order.getId());
         return queryService.detail(confirmed);
     }
@@ -140,6 +129,20 @@ public class BookingStatusCommandService {
         }
     }
 
+    /**
+     * 退款被拒时把支付摘要从 REFUNDING 回退为 PAID（仅当尚无成功退款）。
+     *
+     * @param bookingId 订单 ID
+     */
+    @Transactional
+    public void revertRefunding(long bookingId) {
+        orderMapper.update(null, new LambdaUpdateWrapper<BookingOrderEntity>()
+                .eq(BookingOrderEntity::getId, bookingId)
+                .eq(BookingOrderEntity::getPaymentStatus, "REFUNDING")
+                .eq(BookingOrderEntity::getRefundedAmount, BigDecimal.ZERO)
+                .set(BookingOrderEntity::getPaymentStatus, "PAID"));
+    }
+
     // ------------------------------------------------------------------
     // 履约驱动的状态推进（docs/modules/09 第 5.3 节）
     // ------------------------------------------------------------------
@@ -158,6 +161,8 @@ public class BookingStatusCommandService {
             case START -> orderMapper.startService(bookingId);
             case REQUEST_COMPLETE -> orderMapper.markPendingConfirm(bookingId);
             case COMPLETE -> orderMapper.complete(bookingId);
+            case RESUME -> orderMapper.resumeInService(bookingId);
+            case FORCE_COMPLETE -> orderMapper.forceComplete(bookingId);
         };
         if (updated == 0) {
             throw new BusinessException(ErrorCode.BOOKING_STATUS_CONFLICT);
@@ -167,10 +172,29 @@ public class BookingStatusCommandService {
         patch.setId(bookingId);
         patch.setFulfillmentStatus(switch (command) {
             case DEPART -> "EN_ROUTE";
-            case START -> "IN_SERVICE";
+            case START, RESUME -> "IN_SERVICE";
             case REQUEST_COMPLETE -> "PENDING_CONFIRM";
-            case COMPLETE -> "COMPLETED";
+            case COMPLETE, FORCE_COMPLETE -> "COMPLETED";
         });
+        orderMapper.updateById(patch);
+        // 完成是订单状态机的终态转移之一：发完成事件供评价提醒/审计等消费（事务内落 outbox）
+        if (command == FulfillmentAdvance.COMPLETE || command == FulfillmentAdvance.FORCE_COMPLETE) {
+            BookingOrderEntity completed = orderMapper.selectById(bookingId);
+            eventPublisher.publishCompleted(completed, command == FulfillmentAdvance.FORCE_COMPLETE);
+        }
+    }
+
+    /**
+     * 只同步履约摘要列（不推进订单主状态的履约动作，如签到）。
+     *
+     * @param bookingId        订单 ID
+     * @param fulfillmentStatus 履约摘要值
+     */
+    @Transactional
+    public void syncFulfillmentSummary(long bookingId, String fulfillmentStatus) {
+        BookingOrderEntity patch = new BookingOrderEntity();
+        patch.setId(bookingId);
+        patch.setFulfillmentStatus(fulfillmentStatus);
         orderMapper.updateById(patch);
     }
 
@@ -183,6 +207,10 @@ public class BookingStatusCommandService {
         /** 申请完成：IN_SERVICE → PENDING_CONFIRM。 */
         REQUEST_COMPLETE,
         /** 确认完成：PENDING_CONFIRM → COMPLETED。 */
-        COMPLETE
+        COMPLETE,
+        /** 异常恢复：EN_ROUTE / IN_SERVICE → IN_SERVICE。 */
+        RESUME,
+        /** 运营强制完成：EN_ROUTE / IN_SERVICE / PENDING_CONFIRM → COMPLETED。 */
+        FORCE_COMPLETE
     }
 }

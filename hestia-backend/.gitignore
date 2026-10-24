@@ -39,6 +39,10 @@ logs/
 uploads/
 exports/
 
+### Python 冒烟脚本缓存 ###
+__pycache__/
+*.pyc
+
 ### OS ###
 .DS_Store
 Thumbs.db

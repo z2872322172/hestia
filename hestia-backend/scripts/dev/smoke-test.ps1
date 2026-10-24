@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     技术底座冒烟验证：健康检查、Swagger、地图、事件链路、文件上传。
 
@@ -88,8 +88,21 @@ Invoke-Check '文件上传 /api/v1/system/smoke/file' {
     $tempFile = Join-Path $env:TEMP 'hestia-smoke.png'
     [IO.File]::WriteAllBytes($tempFile, $pngBytes)
 
-    $form = @{ file = Get-Item $tempFile }
-    $response = Invoke-RestMethod -Method Post -Uri "$BaseUrl/api/v1/system/smoke/file" -Form $form -TimeoutSec 30
+    # Windows PowerShell 5.1 的 Invoke-RestMethod 不支持 -Form，手工构造 multipart
+    $boundary = '----hestia-smoke-' + [Guid]::NewGuid().ToString('N')
+    $fileName = 'hestia-smoke.png'
+    $header = "--$boundary`r`nContent-Disposition: form-data; name=`"file`"; filename=`"$fileName`"`r`n"
+    $header += "Content-Type: image/png`r`n`r`n"
+    $footer = "`r`n--$boundary--`r`n"
+    $headerBytes = [Text.Encoding]::UTF8.GetBytes($header)
+    $footerBytes = [Text.Encoding]::UTF8.GetBytes($footer)
+    $body = New-Object byte[] ($headerBytes.Length + $pngBytes.Length + $footerBytes.Length)
+    [Array]::Copy($headerBytes, 0, $body, 0, $headerBytes.Length)
+    [Array]::Copy($pngBytes, 0, $body, $headerBytes.Length, $pngBytes.Length)
+    [Array]::Copy($footerBytes, 0, $body, $headerBytes.Length + $pngBytes.Length, $footerBytes.Length)
+
+    $response = Invoke-RestMethod -Method Post -Uri "$BaseUrl/api/v1/system/smoke/file" `
+        -ContentType "multipart/form-data; boundary=$boundary" -Body $body -TimeoutSec 30
     Write-Host " objectKey=$($response.data.objectKey)" -NoNewline
     if (-not $response.data.url) { throw '未返回预签名地址' }
     Remove-Item $tempFile -ErrorAction SilentlyContinue

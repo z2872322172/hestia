@@ -116,6 +116,41 @@ public class CustomerProfileService implements CustomerQueryService {
     }
 
     /**
+     * 按客户档案 ID 反查账号 ID（{@code CustomerQueryService} 契约实现）。
+     *
+     * <p>与 {@link #requireUsable(long)} 方向相反：事件载荷里只有客户档案 ID
+     * （订单表存的就是它），通知模块需要用它定位收件账号。</p>
+     *
+     * @param customerId 客户档案 ID
+     * @return 账号 ID
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public long requireAccountIdByCustomerId(long customerId) {
+        CustomerProfileEntity entity = profileMapper.selectById(customerId);
+        if (entity == null) {
+            throw new BusinessException(ErrorCode.CUSTOMER_PROFILE_NOT_FOUND);
+        }
+        return entity.getAccountId();
+    }
+
+    /**
+     * 按客户业务编号反查账号 ID（{@code CustomerQueryService} 契约实现）。
+     *
+     * @param customerNo 客户业务编号
+     * @return 账号 ID
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public long requireAccountIdByCustomerNo(String customerNo) {
+        CustomerProfileEntity entity = profileMapper.selectByCustomerNo(customerNo);
+        if (entity == null) {
+            throw new BusinessException(ErrorCode.CUSTOMER_PROFILE_NOT_FOUND);
+        }
+        return entity.getAccountId();
+    }
+
+    /**
      * 客户档案视图。
      *
      * @param accountId 账号 ID

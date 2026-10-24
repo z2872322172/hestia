@@ -5,7 +5,7 @@
 
 ## 当前状态
 
-**批次 0（技术底座）+ 批次 1（identity / customer / location）+ 批次 2（catalog / workforce / scheduling）+ 批次 3 第一轮（booking 全层 + dispatch 骨架）全部完成**，可编译、可测试、可真实启动并跑通业务闭环。
+**批次 0（技术底座）+ 批次 1（identity / customer / location）+ 批次 2（catalog / workforce / scheduling）+ 批次 3（booking + payment + dispatch 履约）+ 批次 4（fulfillment）+ 批次 5（aftersales / notification）全部完成**，可编译、可测试、可真实启动并跑通业务闭环。
 
 | 项 | 状态 |
 | --- | --- |
@@ -16,6 +16,10 @@
 | Flyway `V3__service_catalog_workforce.sql`（11 张表，含人员 5 张预留表） | 完成 |
 | Flyway `V4__scheduling.sql`（3 张表：时间窗 / 排班 / 时段库存 + 种子窗口） | 完成 |
 | Flyway `V5__booking_dispatch.sql`（9 张表：订单 5 + 派单 4 + 默认派单策略） | 完成 |
+| Flyway `V6__payment_fulfillment_aftersales.sql`（支付单 / 回调 / 履约记录 / 评价 / 售后 / 质量汇总） | 完成 |
+| Flyway `V7__dispatch_reason.sql`（派单原因字段） | 完成 |
+| Flyway `V8__notification.sql`（通知 4 表 + 8 条种子模板） | 完成 |
+| Flyway `V9__operations.sql`（运营日报指标 / 导出任务 2 表） | 表已建，应用层待开发 |
 | MyBatis-Plus（分页 + 乐观锁 + 审计字段填充） | 完成 |
 | Redis（JSON 序列化 + key 规范 + Redisson） | 完成 |
 | RocketMQ 5.x（Outbox → Relay → 幂等消费） | 完成（真实 Broker 联调见下文） |
@@ -35,9 +39,13 @@
 | **排班与可用性**（时间窗、批量排班、请假/停排、时段状态机、三级可用性过滤） | 完成 |
 | **订单**（下单预览/创建、三段式幂等、支付确认、改期、取消违约金、超时关单） | 完成 |
 | **派单骨架**（任务/候选/分配三表、支付激活、取消联动、改期改派链） | 完成 |
-| `mvn clean verify` | **通过（170 个测试）** |
-| 业务闭环冒烟（批次 1：20 / 批次 2 目录：26 / 人员：22 / 排班：27 / 订单：24 项断言） | **均通过**（见「本次验证记录」） |
-| payment（支付单 / 回调 / 对账）、dispatch 接单与履约、售后 | 未开始，批次 3 第二轮推进 |
+| `mvn clean verify` | **通过（208 个测试）** |
+| 业务闭环冒烟（批次 1：20 / 批次 2 目录：26 / 人员：22 / 排班：27 / 订单：24 / 批次 3~5 全链路 项断言） | **均通过**（见「本次验证记录」）；通知冒烟脚本就绪，待启动验证 |
+| **支付**（支付单、渠道回调验签、退款与对账，smoke 走真实回调链路） | 完成 |
+| **派单接单与履约**（接单/改派、履约记录、签到/开始/完成与订单状态同步） | 完成 |
+| **评价与售后**（完成单评价、隐藏违规、售后工单受理→结论→退款联动支付） | 完成 |
+| **站内通知**（事件→任务→渲染→收件箱；去重幂等、退避重试、运营任务与模板管理） | 完成 |
+| 运营日报与导出（`operation_daily_metric` / `export_job`） | 表已建，应用层待开发 |
 
 ## 技术栈与版本
 
@@ -76,7 +84,9 @@ hestia-backend/
 │  ├─ smoke-batch2.py             批次 2 服务目录与报价冒烟（26 项断言）
 │  ├─ smoke-workforce.py          批次 2 人员与资质冒烟（22 项断言）
 │  ├─ smoke-scheduling.py         批次 2 排班与可用性冒烟（27 项断言）
-│  └─ smoke-booking.py            批次 3 订单与派单冒烟（24 项断言）
+│  ├─ smoke-booking.py            批次 3 订单与派单冒烟（24 项断言）
+│  ├─ smoke-batch3.py             批次 3~5 全链路冒烟：支付→接单→履约→评价→售后（含窗口自适应）
+│  └─ smoke-notification.py       批次 5 通知冒烟：幂等去重 / 退避重试 / 越权 / 模板管理
 └─ src/
    ├─ main/java/com/housekeeping/platform/
    │  ├─ HousekeepingPlatformApplication.java
@@ -129,7 +139,11 @@ hestia-backend/
 │  │  ├─ application/  BookingApplicationService（下单编排）、BookingQueryService、
 │  │  │                 BookingStatusCommandService、BookingPaymentTimeoutJob、BookingProperties
 │  │  └─ api/          Customer/Worker/OperatorBookingController
-│  ├─ dispatch/     派单：任务、候选、分配（批次 3 骨架，接单/履约待做）
+│  ├─ payment/      支付：支付单、渠道回调验签、退款与对账
+│  ├─ fulfillment/  履约：签到/出发/开始/完成记录与订单状态同步
+│  ├─ aftersales/   评价与售后：评价提交与隐藏、售后工单、质量汇总
+│  ├─ notification/ 站内通知：任务/模板/投递/收件箱 + MQ 事件消费者
+│  ├─ dispatch/     派单：任务、候选、分配、接单与改派
 │  │  ├─ persistence/  dispatch_policy / dispatch_job / dispatch_candidate / order_assignment
 │  │  └─ application/  DispatchApplicationService（建任务/激活/取消/改派）
 │  └─ infrastructure/
@@ -151,6 +165,10 @@ hestia-backend/
       ├─ db/migration/V3__service_catalog_workforce.sql
       ├─ db/migration/V4__scheduling.sql
       ├─ db/migration/V5__booking_dispatch.sql
+      ├─ db/migration/V6__payment_fulfillment_aftersales.sql
+      ├─ db/migration/V7__dispatch_reason.sql
+      ├─ db/migration/V8__notification.sql
+      ├─ db/migration/V9__operations.sql
       └─ mapper/ 、static/
 ```
 
@@ -176,6 +194,8 @@ python .\scripts\dev\smoke-batch2.py   # 批次 2 服务目录：分类树 / 详
 python .\scripts\dev\smoke-workforce.py    # 批次 2 人员：开户 / 审核 / 技能证书 / 可派单资格
 python .\scripts\dev\smoke-scheduling.py   # 批次 2 排班：时间窗 / 批量排班 / 请假停排 / 可用性
 python .\scripts\dev\smoke-booking.py      # 批次 3 订单：下单幂等 / 支付 / 改期 / 取消 / 超时
+python .\scripts\dev\smoke-batch3.py       # 批次 3~5 全链路：真实支付 → 接单 → 履约 → 评价 → 售后
+python .\scripts\dev\smoke-notification.py # 批次 5 通知：去重幂等 / 退避重试 / 越权 / 模板管理
 ```
 
 > `smoke-batch1.py` 每次运行都会生成新的手机号，可以在同一个库上反复执行；
@@ -365,7 +385,7 @@ $env:REDIS_HOST="localhost"
 | GET | `/api/v1/public/service-windows` | 启用中的标准时间窗 |
 | GET | `/api/v1/public/availability?serviceItemNo=&serviceAreaId=&dateFrom=&dateTo=` | 聚合可约时段（区间 ≤ 14 天；不暴露人员名单与剩余数量） |
 
-### 批次 3 业务 API（订单，当前阶段）
+### 批次 3 业务 API（订单）
 
 客户侧（`CUSTOMER`）：
 
@@ -401,6 +421,33 @@ $env:REDIS_HOST="localhost"
 
 `prod` 下 `/api/v1/system/smoke/**` 被 `denyAll`，不是"接口不注册"这种可绕过的方式。
 
+### 批次 5 业务 API（站内通知）
+
+收件箱（路径不带角色前缀：客户 / 人员 / 运营都通过登录态访问自己的收件箱，数据按当前账号收敛，他人编号探测统一回 404）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/v1/notifications?onlyUnread=&page=&size=` | 收件箱分页（`onlyUnread=true` 只看未读） |
+| GET | `/api/v1/notifications/unread-count` | 未读数量（前端红点） |
+| PUT | `/api/v1/notifications/{notificationNo}/read` | 标记单条已读（重复标记幂等） |
+| PUT | `/api/v1/notifications/read-all` | 全部标记已读，返回本次标记条数 |
+
+运营侧（`OPERATOR / ADMIN`）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/v1/operator/notification-tasks?status=&page=&size=` | 任务分页（PENDING / PROCESSING / SENT / FAILED / CANCELED） |
+| POST | `/api/v1/operator/notification-tasks/{taskNo}/retry` | 人工重试失败任务（FAILED → PENDING，立即参与调度） |
+| GET | `/api/v1/operator/notification-templates` | 模板列表（8 条种子模板） |
+| PUT | `/api/v1/operator/notification-templates/{templateCode}` | 改内容 / 启停（不允许增删编码；敏感变量前置拦截；内容版本 +1） |
+
+通知冒烟端点（local / demo / test，生产 denyAll）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/v1/system/smoke/notification/ingest` | 注入事件（跳过 MQ 直接建任务，与消费者同入口）；重复注入命中去重返回空列表 |
+| POST | `/api/v1/system/smoke/notification/dispatch?asOf=` | 触发一轮发送扫描，`asOf` 可注入模拟时钟验证退避 |
+
 ## 关键设计说明
 
 1. **Outbox 两段式投递**：`OutboxClaimService` 用 `SELECT ... FOR UPDATE SKIP LOCKED` 在短事务里把 `PENDING` 改成 `SENDING`，事务提交后再发送 MQ。发送失败按 `base * 2^(n-1)` 退避重试，超过 `max-retry` 置 `DEAD` 等人工处理，不会静默丢事件。
@@ -433,11 +480,16 @@ $env:REDIS_HOST="localhost"
 28. **三段式幂等协议**：`IdempotencyService` 按"查 SUCCEEDED 回放 → begin 插 PROCESSING 占位 → markSucceeded 存响应快照"工作，占位与业务写库同事务（回滚即消失）。幂等键按 **键 + 账号 + 接口路径** 三重隔离；回放前必须比对 `request_hash`——同键不同内容直接 409 `IDEMPOTENCY_CONFLICT`，绝不能把旧响应静默回放给内容已变的新请求（冒烟抓出过这个缺陷）。
 29. **订单摘要列与派单表在同一事务里同步**：`booking_order` 的 `assignment_status` 等摘要列是详情页/任务页的读取源，派单推进（支付激活 → PENDING_ACCEPT、取消 → CANCELED）时必须回填，否则人员任务列表（按 `current_worker_id` 查）与运营监控读到滞后状态（冒烟抓出过）。回填用 `updateById` 的"只更新非 null 字段"特性做最小 patch。
 30. **支付超时任务是条件更新兜底的可重试扫描**：每轮 `UPDATE ... WHERE order_status='PENDING_PAYMENT'` 影响行数 0 就跳过（客户恰好同时支付/取消不重复释放），逐单 try/catch 容错。`runOnce(asOf)` 重载支持注入模拟时钟，冒烟不用真等 15 分钟。
+31. **通知是三层幂等收敛的副产物**：消费幂等（`consumer_message` 唯一键）→ 任务去重（`dedupe_key = 事件 + 收件人 + 模板 + 渠道` 唯一索引，重复消费静默跳过）→ 投递幂等（`notification.task_id` 唯一索引，发送后崩溃重投按已发送处理）。查询与插入之间总有窗口，唯一键没有。
+32. **收件人解析失败跳过而不是让事件消费失败**：客户档案关闭、人员已删除时打 WARN 跳过该收件人——通知是业务副产物，不能阻断 MQ 确认，否则同一条事件被反复重投；缺口从运营任务列表察觉比从死信堆积排查容易得多。
+33. **模板变量白名单渲染 + 敏感变量双道拦截**：`TemplateRenderer` 只做 `{变量}` 替换，缺变量渲染失败进任务重试而不是发半截文案；保存模板时 `findForbiddenVariable` 前置拦截 `{phone}` / `{address}` / `{idCard}` 等敏感占位符（VALIDATION_FAILED），渲染时再拦一道。模板编码是任务外键，**不允许增删只允许改内容与启停**，改内容版本 +1。
+34. **发送失败按 1/5/30/120 分钟退避，五次进 FAILED**：重试推进用条件更新（`WHERE status='PROCESSING' AND retry_count=旧值`），多实例调度与人工重试并发也不会丢计数；FAILED 只能运营人工重试（先修原因再重试，重试清空退避与错误但保留失败计数）。
+35. **通知不回滚业务、绝不向上抛**：调度任务内所有异常消化为重试 / FAILED；发送记录（notification_delivery）只追加，是排障依据而非强一致数据。
 
 ## 测试
 
 ```powershell
-.\mvnw.cmd clean verify                 # 默认：单元 / 契约 / 架构 / 上下文，共 170 个测试
+.\mvnw.cmd clean verify                 # 默认：单元 / 契约 / 架构 / 上下文，共 208 个测试
 .\mvnw.cmd test "-Dgroups=integration"  # 需要 Docker：Flyway(Testcontainers MySQL)、Redis、MinIO
 ```
 
@@ -483,6 +535,14 @@ $env:REDIS_HOST="localhost"
 | --- | --- | --- |
 | `BookingStatusTest` | 订单 7 状态迁移矩阵穷举、cancellable/reschedulable/paid 判定、按库值解析 | 9 |
 | `CancellationFeeCalculatorTest` | 24h 边界免费、费率/固定金额主导、上取整、封顶、已开始收费、0 窗口全收费 | 8 |
+
+批次 5 通知模块新增的单元测试（全部纯函数，不依赖外部基础设施）：
+
+| 测试类 | 覆盖点 | 数量 |
+| --- | --- | --- |
+| `TemplateRendererTest` | 占位符替换、缺变量失败、null 变量、标题/正文敏感变量拦截、`findForbiddenVariable` | 8 |
+| `NotificationRetryBackoffTest` | 1/5/30/120 四档退避、越界封顶、非正数兜底、`exhausted` 边界 | 8 |
+| `NotificationTaskStatusTest` | 任务 5 状态迁移矩阵穷举、终态判定、事件类型支持 | 5 |
 
 业务闭环不写成 Testcontainers 集成测试，而是 `scripts/dev/smoke-batch1.py` 与 `smoke-batch2.py`：
 需要真实 MySQL + 真实 HTTP 栈才有意义，用容器跑一遍反而验证不到"迁移后的种子数据对不对"。
@@ -570,16 +630,13 @@ $env:REDIS_HOST="localhost"
 > booking 用时间戳轮转远期日期（`today + 5 + ts % 40`），scheduling 改为
 > `find_clean_dates()` 逐日探测——两套脚本从此可以在同一个库上任意顺序反复执行。
 
-## 下一步（批次 3 第二轮：payment / dispatch 接单 / 履约售后）
+## 下一步（批次 5 收尾：运营日报与导出）
 
-1. **payment**：支付单（`payment_order`）、回调验签、退款与对账；
-   `BookingStatusCommandService.markPaid` 已预留为支付回调内部命令，接入后替换 smoke 端点。
-2. **dispatch 接单**：人员接单 / 拒单 API（`PENDING_ACCEPT → ACCEPTED/REASSIGNING`）、
-   接单超时自动改派、评分派单策略（替换简单递减分）。
-3. **履约与售后**：出发/开始/完成打卡（`EN_ROUTE → IN_SERVICE → PENDING_CONFIRM → COMPLETED`）、
-   售后申请与退款闭环（`after_sale_status`）。
-4. **事件化**：订单状态变更写 `event_outbox`（`BOOKING_PAID` / `BOOKING_CANCELED` 等），
-   打通已有 Outbox → RocketMQ 链路。
+1. **运营日报**：`operation_daily_metric`（V9 已建表）按 `(metric_date, service_area_id)` UPSERT 的
+   按日聚合读模型，由定时任务从各业务模块的公开统计契约汇总写入，支持幂等重算；
+2. **导出任务**：`export_job` 异步导出（订单 / 支付 / 人员等），文件经私有对象存储（MinIO）落地，
+   到期清理，禁止公开 URL；
+3. **通知冒烟实跑**：`smoke-notification.py` 已就绪，与应用启动一起验证（V8 迁移 + 冒烟端点）。
 
 已知待补（非阻塞）：
 

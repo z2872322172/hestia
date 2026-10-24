@@ -135,6 +135,21 @@ public class WorkerProfileService {
     }
 
     /**
+     * 按人员 ID 反查账号 ID（通知模块按派单事件定位收件人使用）。
+     *
+     * <p>与 {@code maxDailyOrdersByIds} 同类：只暴露一个标量，
+     * 不把档案实体送出模块边界。</p>
+     *
+     * @param workerId 人员 ID
+     * @return 账号 ID
+     * @throws BusinessException 人员不存在
+     */
+    @Transactional(readOnly = true)
+    public long requireAccountIdByWorkerId(long workerId) {
+        return requireById(workerId).getAccountId();
+    }
+
+    /**
      * 批量查询人员的每日接单上限（scheduling 可用性过滤使用）。
      *
      * <p>只取 id 与上限两列：候选人员集合小，但逐个 {@code requireById} 会放大查询次数。</p>

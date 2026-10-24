@@ -1,0 +1,16 @@
+{
+  "color": [
+    {
+      "name": "start_window_background",
+      "value": "#FBF8F5"
+    },
+    {
+      "name": "brand",
+      "value": "#F0653A"
+    },
+    {
+      "name": "page_bg",
+      "value": "#FBF8F5"
+    }
+  ]
+}

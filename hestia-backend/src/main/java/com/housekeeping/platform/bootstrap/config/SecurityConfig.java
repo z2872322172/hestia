@@ -103,6 +103,8 @@ public class SecurityConfig {
                             "/api/v1/auth/worker/activate").permitAll();
                     // 公开位置查询
                     registry.requestMatchers("/api/v1/public/**").permitAll();
+                    // 支付渠道回调：外部网关调用，不带平台令牌；防伪依赖签名校验 + 幂等占位
+                    registry.requestMatchers("/api/v1/payment/callback/**").permitAll();
                     // 按角色划分的业务前缀
                     registry.requestMatchers("/api/v1/admin/**").hasRole("ADMIN");
                     registry.requestMatchers("/api/v1/operator/**").hasAnyRole("OPERATOR", "ADMIN");

@@ -205,4 +205,20 @@ public interface WorkerSlotMapper extends BaseMapper<WorkerSlotEntity> {
     List<WorkerSlotEntity> selectByWorkerAndDateRange(@Param("workerId") Long workerId,
                                                       @Param("dateFrom") LocalDate dateFrom,
                                                       @Param("dateTo") LocalDate dateTo);
+
+    /**
+     * 按服务日期统计时段总数与已支付占用数（运营统计契约，docs/modules/13 第 7.4 节）。
+     *
+     * <p>全公司口径：时段本身不携带区域属性。</p>
+     *
+     * @param dateFrom 起始日期（含）
+     * @param dateTo   结束日期（含）
+     * @return statDate → workerSlotTotal / workerSlotBooked 两行
+     */
+    @Select("SELECT service_date AS statDate, COUNT(*) AS cnt, "
+            + "SUM(status = 'BOOKED') AS booked FROM worker_slot "
+            + "WHERE service_date BETWEEN #{dateFrom} AND #{dateTo} "
+            + "GROUP BY service_date")
+    List<Map<String, Object>> selectSlotDailyStats(@Param("dateFrom") LocalDate dateFrom,
+                                                   @Param("dateTo") LocalDate dateTo);
 }

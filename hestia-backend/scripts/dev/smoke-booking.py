@@ -16,7 +16,8 @@
 
 隔离策略
 --------
-可用性与时段是全库聚合，脚本使用 5~6 天后（远期）日期并独占一名新建人员，
+可用性与时段是全库聚合，脚本独占一名新建人员，并在排班前探测候选远期
+日期、跳过被历史冒烟遗留可用人员污染的日期（探测不到则顺延最多 40 天），
 四个订单分别占用 far/AM、far/PM、far2/PM、far2/AM（时序错开），互相不干扰。
 
 安全约定
@@ -32,6 +33,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import time
@@ -40,6 +42,9 @@ import urllib.request
 from datetime import date, timedelta
 
 DEFAULT_ITEM_NO = "SVC202610230001"  # 种子项目，时长 240 分钟
+
+# Mock 支付网关共享密钥（application.yml app.payment.mock-gateway-secret 默认值）
+MOCK_GATEWAY_SECRET = "hestia-mock-gateway-secret"
 
 CITY_CODE = "440100"
 DISTRICT_CODE = "440106"
@@ -170,8 +175,8 @@ def main() -> int:
     phone_a = new_phone("137")
     phone_b = new_phone("138")
     ts = int(time.time())
-    # 可用性与时段是全库聚合：每轮用互不相同的远期日期（偏移随时间戳轮转），
-    # 避免上一轮冒烟遗留的排班/时段干扰本轮的"可约/不可约"断言
+    # 可用性与时段是全库聚合：初始远期日期随时间戳轮转，正式选定前还会在
+    # prepare_schedules 里探测——跳过被历史冒烟遗留可约时段污染的日期
     far = date.today() + timedelta(days=5 + ts % 40)
     far2 = far + timedelta(days=1)
     iso = lambda d: d.isoformat()  # noqa: E731
@@ -245,6 +250,24 @@ def main() -> int:
     check("准备：人员档案/技能/区域/激活/审核", prepare_worker)
 
     def prepare_schedules() -> str:
+        nonlocal far, far2
+        # "下单冻结时段"断言的前提是本脚本新建人员是当日唯一可用人员。
+        # 历史冒烟会在库中遗留"有排班无订单"的可用人员，因此先探测候选日期：
+        # 若 MORNING/AFTERNOON 任一已可约（被遗留人员占据），顺延到下一天。
+        windows: dict = {}
+        for _ in range(40):
+            status, payload = api.call(
+                "GET", f"/api/v1/public/availability?serviceItemNo={item_no}"
+                       f"&serviceAreaId={state['street_area_id']}&dateFrom={iso(far)}&dateTo={iso(far)}")
+            expect(status == 200, f"可用性探测 -> HTTP {status} code={payload.get('code')}")
+            windows = {w["windowCode"]: w["available"] for w in payload["data"][0]["windows"]}
+            if windows.get("MORNING") is False and windows.get("AFTERNOON") is False:
+                break
+            far += timedelta(days=1)
+            far2 = far + timedelta(days=1)
+        expect(windows.get("MORNING") is False and windows.get("AFTERNOON") is False,
+               f"40 天内找不到无遗留可约时段的干净日期（最后探测 {iso(far)}：{windows}）")
+
         status, payload = api.call("POST", "/api/v1/operator/schedules/batch", {
             "workerNo": state["worker_no"],
             "serviceDates": [iso(far), iso(far2)],
@@ -256,7 +279,7 @@ def main() -> int:
         expect(len(schedules) == 4, f"应生成 4 条排班，实际 {len(schedules)}")
         for s in schedules:
             expect(s["slotStatus"] == "AVAILABLE", f"WORK 排班应生成 AVAILABLE 时段 {s}")
-        return "far/far2 × 早/午 4 条排班"
+        return f"干净日期 {iso(far)}/{iso(far2)} × 早/午 4 条排班"
 
     check("准备：运营批量排班（远期 4 窗口）", prepare_schedules)
 
@@ -416,20 +439,48 @@ def main() -> int:
 
     check("下单 O2 -> 派单任务 WAITING_PAYMENT", create_order_o2)
 
-    def pay_wrong_amount() -> str:
-        return expect_error(api, "POST",
-                            f"/api/v1/system/smoke/booking/{state['o2']}/mark-paid",
-                            422, "PAYMENT_AMOUNT_MISMATCH",
-                            {"paidAmount": state["price"] + 0.01})
+    def pay_order(order_no: str, amount: float | None = None) -> tuple[str, int, dict]:
+        """创建支付单并发送 Mock 回调；金额缺省按支付单应付，签名按支付单金额计算。
 
-    check("支付金额不符 -> 422 拒绝", pay_wrong_amount)
+        返回 (支付单号, 回调 HTTP 状态, 回调响应)。
+        """
+        status, payload = api.call("POST", f"/api/v1/customer/bookings/{order_no}/pay",
+                                   {"channel": "MOCK"}, token=state["tokenA"])
+        expect(status == 200,
+               f"创建支付单 -> HTTP {status} code={payload.get('code')} msg={payload.get('message')}")
+        payment_no = payload["data"]["paymentNo"]
+        payable = f"{payload['data']['amount']:.2f}"
+        callback_amount = f"{amount:.2f}" if amount is not None else payable
+        sign = hashlib.sha256(
+            f"{payment_no}|{payable}|{MOCK_GATEWAY_SECRET}".encode("utf-8")).hexdigest()
+        status, payload = api.call("POST", "/api/v1/payment/callback/mock", {
+            "paymentNo": payment_no,
+            "callbackId": f"cb-{payment_no}-{callback_amount.replace('.', '-')}",
+            "tradeNo": f"TR{int(time.time() * 1000) % 1000000000}",
+            "amount": callback_amount, "sign": sign})
+        return payment_no, status, payload
+
+    def pay_wrong_amount() -> str:
+        payment_no, status, payload = pay_order(state["o2"], amount=state["price"] + 0.01)
+        expect(status == 400, f"金额不符应 HTTP 400，实际 {status}")
+        expect(payload.get("code") == "PAYMENT_CALLBACK_INVALID",
+               f"期望 PAYMENT_CALLBACK_INVALID，实际 {payload.get('code')}")
+        state["payment_no_o2"] = payment_no
+        return f"400/PAYMENT_CALLBACK_INVALID（paymentNo={payment_no}）"
+
+    check("支付金额不符 -> 400 拒绝", pay_wrong_amount)
 
     def pay_correct() -> str:
-        status, payload = api.call("POST",
-                                   f"/api/v1/system/smoke/booking/{state['o2']}/mark-paid",
-                                   {"paidAmount": state["price"]})
-        expect(status == 200, f"HTTP {status} code={payload.get('code')} msg={payload.get('message')}")
-        detail = payload["data"]
+        payment_no = state["payment_no_o2"]
+        sign = hashlib.sha256(
+            f"{payment_no}|{state['price']:.2f}|{MOCK_GATEWAY_SECRET}".encode("utf-8")).hexdigest()
+        status, payload = api.call("POST", "/api/v1/payment/callback/mock", {
+            "paymentNo": payment_no, "callbackId": f"cb-ok-{payment_no}",
+            "tradeNo": f"TR{int(time.time() * 1000) % 1000000000}",
+            "amount": f"{state['price']:.2f}", "sign": sign})
+        expect(status == 200, f"回调 -> HTTP {status} code={payload.get('code')} msg={payload.get('message')}")
+        expect(payload["data"]["status"] == "SUCCESS", f"支付状态 {payload['data']['status']}")
+        detail = require_detail(api, state["o2"], state["tokenA"])
         expect(detail["orderStatus"] == "CONFIRMED", f"orderStatus={detail['orderStatus']}")
         expect(detail["paymentStatus"] == "PAID", f"paymentStatus={detail['paymentStatus']}")
         expect(detail["assignmentStatus"] == "PENDING_ACCEPT",
@@ -441,12 +492,17 @@ def main() -> int:
     check("模拟支付成功 -> CONFIRMED 且派单 PENDING_ACCEPT", pay_correct)
 
     def pay_twice_idempotent() -> str:
-        status, payload = api.call("POST",
-                                   f"/api/v1/system/smoke/booking/{state['o2']}/mark-paid",
-                                   {"paidAmount": state["price"]})
-        expect(status == 200, f"重复支付应幂等返回，实际 HTTP {status} code={payload.get('code')}")
-        expect(payload["data"]["orderStatus"] == "CONFIRMED", "重复支付后仍应 CONFIRMED")
-        return "重复回调幂等返回 CONFIRMED"
+        payment_no = state["payment_no_o2"]
+        sign = hashlib.sha256(
+            f"{payment_no}|{state['price']:.2f}|{MOCK_GATEWAY_SECRET}".encode("utf-8")).hexdigest()
+        status, payload = api.call("POST", "/api/v1/payment/callback/mock", {
+            "paymentNo": payment_no, "callbackId": f"cb-ok-{payment_no}",
+            "tradeNo": f"TR{int(time.time() * 1000) % 1000000000}",
+            "amount": f"{state['price']:.2f}", "sign": sign})
+        expect(status == 200, f"重复回调应 200 幂等返回，实际 HTTP {status} code={payload.get('code')}")
+        expect(payload["data"]["status"] == "DUPLICATE_CALLBACK",
+               f"重复回调应 DUPLICATE_CALLBACK，实际 {payload['data']['status']}")
+        return "重复回调幂等返回 DUPLICATE_CALLBACK"
 
     check("重复支付回调 -> 幂等无副作用", pay_twice_idempotent)
 
@@ -489,10 +545,9 @@ def main() -> int:
             "quantity": 1}, token=state["tokenA"], idem_key=f"smoke-b11-o3-{ts}")
         expect(status == 200, f"HTTP {status} code={payload.get('code')}")
         state["o3"] = payload["data"]["orderNo"]
-        status, payload = api.call("POST",
-                                   f"/api/v1/system/smoke/booking/{state['o3']}/mark-paid",
-                                   {"paidAmount": state["price"]})
-        expect(status == 200, f"支付 -> HTTP {status} code={payload.get('code')}")
+        _, pay_status, pay_payload = pay_order(state["o3"])
+        expect(pay_status == 200 and pay_payload["data"]["status"] == "SUCCESS",
+               f"支付 -> HTTP {pay_status} code={pay_payload.get('code')}")
         # 远期（>= 5 天后）取消，超过免费窗口 24h，应零费用
         status, payload = api.call("POST", f"/api/v1/customer/bookings/{state['o3']}/cancel",
                                    {"reasonCode": "CUSTOMER_CANCEL", "reasonText": "冒烟已付取消"},

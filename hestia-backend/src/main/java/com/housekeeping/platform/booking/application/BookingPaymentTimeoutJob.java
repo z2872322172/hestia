@@ -7,6 +7,7 @@ import com.housekeeping.platform.booking.persistence.mapper.BookingOrderMapper;
 import com.housekeeping.platform.booking.persistence.mapper.BookingStatusLogMapper;
 import com.housekeeping.platform.common.persistence.RequiresPersistence;
 import com.housekeeping.platform.dispatch.application.DispatchApplicationService;
+import com.housekeeping.platform.payment.application.PaymentApplicationService;
 import com.housekeeping.platform.scheduling.application.WorkerSlotReservationService;
 import com.housekeeping.platform.scheduling.persistence.entity.WorkerSlotEntity;
 import org.slf4j.Logger;
@@ -49,18 +50,26 @@ public class BookingPaymentTimeoutJob {
 
     private final DispatchApplicationService dispatchService;
 
+    private final PaymentApplicationService paymentService;
+
     private final BookingProperties properties;
+
+    private final BookingEventPublisher eventPublisher;
 
     public BookingPaymentTimeoutJob(BookingOrderMapper orderMapper,
                                     BookingStatusLogMapper statusLogMapper,
                                     WorkerSlotReservationService slotReservation,
                                     DispatchApplicationService dispatchService,
-                                    BookingProperties properties) {
+                                    PaymentApplicationService paymentService,
+                                    BookingProperties properties,
+                                    BookingEventPublisher eventPublisher) {
         this.orderMapper = orderMapper;
         this.statusLogMapper = statusLogMapper;
         this.slotReservation = slotReservation;
         this.dispatchService = dispatchService;
+        this.paymentService = paymentService;
         this.properties = properties;
+        this.eventPublisher = eventPublisher;
     }
 
     /**
@@ -119,6 +128,8 @@ public class BookingPaymentTimeoutJob {
             slotReservation.releaseHeld(slot.getId(), order.getId());
         }
         dispatchService.cancelForBooking(order.getId());
+        // 未完成的支付单一并关闭，防止客户在订单取消后还能对旧支付单回调成功
+        paymentService.closeForBooking(order.getId());
         // 摘要列与派单表同步：取消后运营监控应立即看到 CANCELED
         BookingOrderEntity patch = new BookingOrderEntity();
         patch.setId(order.getId());
@@ -132,6 +143,8 @@ public class BookingPaymentTimeoutJob {
         logEntity.setReasonCode(REASON_CODE);
         logEntity.setReasonText(REASON_TEXT);
         statusLogMapper.insert(logEntity);
+        // 超时关单也是订单取消事件，source=SYSTEM 与客户取消区分（事务内落 outbox）
+        eventPublisher.publishCanceled(order, REASON_CODE, REASON_TEXT, "SYSTEM");
         return true;
     }
 }

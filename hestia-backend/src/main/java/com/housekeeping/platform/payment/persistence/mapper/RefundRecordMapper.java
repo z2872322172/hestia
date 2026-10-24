@@ -2,13 +2,16 @@ package com.housekeeping.platform.payment.persistence.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.housekeeping.platform.payment.persistence.entity.RefundRecordEntity;
+import com.housekeeping.platform.payment.persistence.query.RefundDailyStatRow;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -153,4 +156,43 @@ public interface RefundRecordMapper extends BaseMapper<RefundRecordEntity> {
     @Select("<script>SELECT COUNT(*) FROM refund_record "
             + "<where><if test='status != null'>status = #{status}</if></where></script>")
     long count(@Param("status") String status);
+
+    // ------------------------------------------------------------------
+    // 运营统计契约（docs/modules/13 第 7.1 节，只读聚合）
+    // ------------------------------------------------------------------
+
+    /**
+     * 按退款完成日 + 区域分组统计退款金额（日报读模型用）。
+     *
+     * <p>区域归属通过联订单表获得（只读 booking_order，不修改）；联表是
+     * 报表聚合的标准做法，不违反"不修改其他模块业务表"的边界。</p>
+     *
+     * @param from 起始日期（含）
+     * @param to   结束日期（含）
+     * @return 分组金额统计行
+     */
+    @Select("SELECT DATE(r.refunded_at) AS statDate, bo.service_area_id AS serviceAreaId, "
+            + "COUNT(*) AS cnt, SUM(r.amount) AS amount "
+            + "FROM refund_record r "
+            + "JOIN booking_order bo ON bo.id = r.booking_id "
+            + "WHERE r.status = 'SUCCESS' AND r.refunded_at >= #{from} "
+            + "AND r.refunded_at < DATE_ADD(#{to}, INTERVAL 1 DAY) "
+            + "GROUP BY statDate, serviceAreaId")
+    List<RefundDailyStatRow> selectRefundDailyStats(@Param("from") LocalDate from,
+                                                    @Param("to") LocalDate to);
+
+    /**
+     * 待处理退款单数（运营工作台用）：REQUESTED / APPROVED / PROCESSING。
+     *
+     * @param areaIds 区域过滤；null 或空 = 不限区域
+     * @return 待处理退款单数
+     */
+    @Select("<script>SELECT COUNT(*) FROM refund_record r "
+            + "JOIN booking_order bo ON bo.id = r.booking_id "
+            + "WHERE r.status IN ('REQUESTED', 'APPROVED', 'PROCESSING') "
+            + "<if test='areaIds != null and areaIds.size() > 0'>"
+            + "AND bo.service_area_id IN "
+            + "<foreach item='id' collection='areaIds' open='(' separator=',' close=')'>#{id}</foreach>"
+            + "</if></script>")
+    long countPending(@Param("areaIds") Collection<Long> areaIds);
 }

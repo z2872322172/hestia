@@ -1,0 +1,11 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "hestia_app",
+  "version": "1.0.0",
+  "description": "Hestia 家政 · HarmonyOS 客户端",
+  "main": "",
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {},
+  "devDependencies": {}
+}

@@ -35,6 +35,7 @@ import com.housekeeping.platform.infrastructure.persistence.sequence.BusinessNoG
 import com.housekeeping.platform.location.application.ServiceAreaMatchService;
 import com.housekeeping.platform.location.domain.ServiceAreaMatchQuery;
 import com.housekeeping.platform.location.domain.ServiceAreaMatchResult;
+import com.housekeeping.platform.payment.application.RefundApplicationService;
 import com.housekeeping.platform.scheduling.application.AvailabilityQueryService;
 import com.housekeeping.platform.scheduling.application.ServiceWindowService;
 import com.housekeeping.platform.scheduling.application.WorkerSlotReservationService;
@@ -110,11 +111,15 @@ public class BookingApplicationService {
 
     private final DispatchApplicationService dispatchService;
 
+    private final RefundApplicationService refundService;
+
     private final IdempotencyService idempotencyService;
 
     private final BusinessNoGenerator noGenerator;
 
     private final ObjectMapper objectMapper;
+
+    private final BookingEventPublisher eventPublisher;
 
     public BookingApplicationService(BookingProperties properties,
                                      BookingOrderMapper orderMapper,
@@ -131,9 +136,11 @@ public class BookingApplicationService {
                                      AvailabilityQueryService availabilityQueryService,
                                      WorkerSlotReservationService slotReservation,
                                      DispatchApplicationService dispatchService,
+                                     RefundApplicationService refundService,
                                      IdempotencyService idempotencyService,
                                      BusinessNoGenerator noGenerator,
-                                     ObjectMapper objectMapper) {
+                                     ObjectMapper objectMapper,
+                                     BookingEventPublisher eventPublisher) {
         this.properties = properties;
         this.orderMapper = orderMapper;
         this.itemMapper = itemMapper;
@@ -149,9 +156,11 @@ public class BookingApplicationService {
         this.availabilityQueryService = availabilityQueryService;
         this.slotReservation = slotReservation;
         this.dispatchService = dispatchService;
+        this.refundService = refundService;
         this.idempotencyService = idempotencyService;
         this.noGenerator = noGenerator;
         this.objectMapper = objectMapper;
+        this.eventPublisher = eventPublisher;
     }
 
     /**
@@ -243,11 +252,24 @@ public class BookingApplicationService {
             cancellation.setPolicySnapshotJson(order.getCancellationPolicySnapshotJson());
             // uk_booking_cancellation_order：并发下第二次取消先被状态条件更新挡住，这里只兜极小窗口
             cancellationMapper.insert(cancellation);
+            // 有剩余可退金额时生成退款申请（无成功支付则静默跳过），摘要置 REFUNDING
+            if (fee.refundableAmount().signum() > 0) {
+                boolean refundCreated = refundService.createForBookingCancellation(order.getId(),
+                        fee.refundableAmount(), reasonCode, reasonText, accountId) != null;
+                if (refundCreated) {
+                    BookingOrderEntity patch = new BookingOrderEntity();
+                    patch.setId(order.getId());
+                    patch.setPaymentStatus("REFUNDING");
+                    orderMapper.updateById(patch);
+                }
+            }
         }
         dispatchService.cancelForBooking(order.getId());
         syncAssignmentSummary(order.getId(), "CANCELED");
         writeStatusLog(order.getId(), fromStatus, BookingStatus.CANCELED.name(),
                 accountId, "USER", reasonCode, reasonText);
+        // 事件与取消同一事务落 outbox，Relay 异步投递（docs/04 第 10.5 节）
+        eventPublisher.publishCanceled(order, reasonCode, reasonText, "CUSTOMER");
     }
 
     /**
@@ -305,6 +327,8 @@ public class BookingApplicationService {
         slotReservation.releaseBooked(order.getWorkerSlotId(), order.getId());
         writeScheduleHistory(order, appointmentDate, window, newSlot.getId(), newWorkerId, accountId);
         dispatchService.rescheduleForBooking(order.getId(), newWorkerId, accountId);
+        // 事件与改期同一事务落 outbox；order 实体仍是改期前快照，恰好用于记录原值
+        eventPublisher.publishRescheduled(order, appointmentDate, serviceWindowCode, newWorkerId);
     }
 
     // ------------------------------------------------------------------
@@ -353,6 +377,8 @@ public class BookingApplicationService {
         writeStatusLog(order.getId(), null, BookingStatus.PENDING_PAYMENT.name(),
                 accountId, "USER", null, null);
         dispatchService.createForBooking(order.getId(), candidates, candidates.get(0), accountId);
+        // 事件与下单同一事务落 outbox；幂等重放路径在 doCreate 之前返回，不会重复发
+        eventPublisher.publishCreated(order);
         return new BookingCreatedView(order.getOrderNo(), order.getOrderStatus(),
                 order.getPayableAmount(), order.getPaymentDeadline());
     }

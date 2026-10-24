@@ -37,13 +37,17 @@ public class RocketMqProperties {
     /**
      * Topic 配置。
      *
-     * <p>技术阶段只有 {@code HK_TECH_EVENT}；业务 Topic（订单、派单、支付）在对应批次加入。</p>
+     * <p>技术阶段只有 {@code HK_TECH_EVENT}；业务 Topic 随对应批次加入
+     * （订单事件在批次 3 接入）。</p>
      */
     @Data
     public static class Topics {
 
         /** 技术冒烟事件 Topic。 */
         private String techEvent = "HK_TECH_EVENT";
+
+        /** 订单领域事件 Topic（订单状态机关键转移点，Outbox 投递）。 */
+        private String bookingEvent = "HK_BOOKING_EVENT";
     }
 
     /**
@@ -54,5 +58,8 @@ public class RocketMqProperties {
 
         /** 技术冒烟消费者组。 */
         private String techSmoke = "GID_TECH_SMOKE";
+
+        /** 通知模块消费者组（订单事件 → 通知任务）。 */
+        private String notification = "GID_NOTIFICATION";
     }
 }

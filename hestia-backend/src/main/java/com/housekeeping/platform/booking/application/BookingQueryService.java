@@ -80,6 +80,19 @@ public class BookingQueryService implements PaymentOrderQueryService {
     }
 
     /**
+     * 支付模块契约：校验订单属于该客户并返回订单 ID（不限状态，流水查询用）。
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public long requireOwnedBookingId(long customerId, String orderNo) {
+        BookingOrderEntity order = orderMapper.selectByOrderNo(orderNo);
+        if (order == null || order.getCustomerId() != customerId) {
+            throw new BusinessException(ErrorCode.BOOKING_NOT_OWNED);
+        }
+        return order.getId();
+    }
+
+    /**
      * 客户订单列表。
      *
      * @param accountId 客户账号 ID（内部转换为客户 ID）

@@ -562,6 +562,80 @@ public enum ErrorCode {
     QUALITY_STAT_RECALCULATION_FAILED("QUALITY_STAT_RECALCULATION_FAILED",
             HttpStatus.INTERNAL_SERVER_ERROR, "质量统计重算失败"),
 
+    // ---------------------------------------------------------------------------
+    // notification（docs/modules/12 第 17 节，只收录实现抛出的码；
+    // 渲染失败 / 发送失败属于任务级失败，记录在 last_error 不对外抛）
+    // ---------------------------------------------------------------------------
+
+    /** 通知模板不存在（或事件类型 + 受众没有可用模板）。 */
+    NOTIFICATION_TEMPLATE_NOT_FOUND("NOTIFICATION_TEMPLATE_NOT_FOUND", HttpStatus.NOT_FOUND,
+            "通知模板不存在"),
+
+    /** 通知模板已停用，不能再被任务引用。 */
+    NOTIFICATION_TEMPLATE_DISABLED("NOTIFICATION_TEMPLATE_DISABLED", HttpStatus.CONFLICT,
+            "通知模板已停用"),
+
+    /** 通知任务不存在。 */
+    NOTIFICATION_TASK_NOT_FOUND("NOTIFICATION_TASK_NOT_FOUND", HttpStatus.NOT_FOUND, "通知任务不存在"),
+
+    /** 通知任务已取消，不允许重试等操作。 */
+    NOTIFICATION_TASK_CANCELED("NOTIFICATION_TASK_CANCELED", HttpStatus.CONFLICT, "通知任务已取消"),
+
+    /**
+     * 站内通知不属于当前用户。
+     *
+     * <p>与 {@code BOOKING_NOT_OWNED} 同理：统一回"不存在"，防止通过通知编号枚举探测他人消息。</p>
+     */
+    NOTIFICATION_NOT_OWNED("NOTIFICATION_NOT_OWNED", HttpStatus.NOT_FOUND, "通知不存在"),
+
+    // ---------------------------------------------------------------------------
+    // operations（docs/modules/13 第 19 节）
+    // ---------------------------------------------------------------------------
+
+    /** 运营账号没有任何授权服务区域，看不到业务数据。 */
+    DASHBOARD_DATA_FORBIDDEN("DASHBOARD_DATA_FORBIDDEN", HttpStatus.FORBIDDEN, "未分配服务区域，无法查看运营数据"),
+
+    /** 报表日期区间非法（缺参、起止倒置或超出上限）。 */
+    REPORT_RANGE_INVALID("REPORT_RANGE_INVALID", HttpStatus.BAD_REQUEST, "报表日期区间不合法"),
+
+    /** 该数据类型不允许导出（首版仅开放订单导出）。 */
+    REPORT_EXPORT_NOT_ALLOWED("REPORT_EXPORT_NOT_ALLOWED", HttpStatus.FORBIDDEN, "该类型数据暂不支持导出"),
+
+    /** 导出任务不存在。 */
+    EXPORT_JOB_NOT_FOUND("EXPORT_JOB_NOT_FOUND", HttpStatus.NOT_FOUND, "导出任务不存在"),
+
+    /**
+     * 导出任务不属于当前用户。
+     *
+     * <p>与 {@code BOOKING_NOT_OWNED} 同理：统一回"不存在"，防止通过导出编号探测他人任务。</p>
+     */
+    EXPORT_JOB_NOT_OWNED("EXPORT_JOB_NOT_OWNED", HttpStatus.NOT_FOUND, "导出任务不存在"),
+
+    /** 导出文件已过期，需要重新发起导出。 */
+    EXPORT_JOB_EXPIRED("EXPORT_JOB_EXPIRED", HttpStatus.CONFLICT, "导出文件已过期，请重新导出"),
+
+    /** 导出文件尚未生成或已失败，无法下载。 */
+    EXPORT_FILE_NOT_READY("EXPORT_FILE_NOT_READY", HttpStatus.CONFLICT, "导出文件尚未就绪"),
+
+    /** 审计日志不存在。 */
+    AUDIT_LOG_NOT_FOUND("AUDIT_LOG_NOT_FOUND", HttpStatus.NOT_FOUND, "审计日志不存在"),
+
+    /** 当前账号无权查看该审计日志。 */
+    AUDIT_LOG_FORBIDDEN("AUDIT_LOG_FORBIDDEN", HttpStatus.FORBIDDEN, "没有权限查看审计日志"),
+
+    /** 系统配置项不存在。 */
+    SYSTEM_CONFIG_NOT_FOUND("SYSTEM_CONFIG_NOT_FOUND", HttpStatus.NOT_FOUND, "系统配置不存在"),
+
+    /** 配置值与声明的类型不匹配，或取值越界。 */
+    SYSTEM_CONFIG_TYPE_INVALID("SYSTEM_CONFIG_TYPE_INVALID", HttpStatus.BAD_REQUEST, "配置值类型不合法"),
+
+    /** 配置版本号不一致（乐观锁），说明配置已被他人修改。 */
+    SYSTEM_CONFIG_VERSION_CONFLICT("SYSTEM_CONFIG_VERSION_CONFLICT", HttpStatus.CONFLICT,
+            "配置已被修改，请刷新后重试"),
+
+    /** 运营侧当前状态/口径不允许该操作。 */
+    OPERATION_NOT_ALLOWED("OPERATION_NOT_ALLOWED", HttpStatus.CONFLICT, "当前状态不允许该操作"),
+
     /** 相同幂等键但请求内容不同。 */
     IDEMPOTENCY_CONFLICT("IDEMPOTENCY_CONFLICT", HttpStatus.CONFLICT, "幂等键冲突，请勿修改请求内容后重试"),
 

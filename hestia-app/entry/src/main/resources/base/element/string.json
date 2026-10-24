@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Hestia 家政客户端"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Hestia 家政"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Hestia 家政"
+    }
+  ]
+}

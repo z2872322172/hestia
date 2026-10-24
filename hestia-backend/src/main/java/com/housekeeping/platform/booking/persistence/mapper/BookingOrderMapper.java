@@ -2,6 +2,10 @@ package com.housekeeping.platform.booking.persistence.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.housekeeping.platform.booking.persistence.entity.BookingOrderEntity;
+import com.housekeeping.platform.booking.persistence.query.BookingDailyStatRow;
+import com.housekeeping.platform.booking.persistence.query.BookingExportRow;
+import com.housekeeping.platform.booking.persistence.query.BookingPaidStatRow;
+import com.housekeeping.platform.booking.persistence.query.BookingTodayStatRow;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -10,6 +14,7 @@ import org.apache.ibatis.annotations.Update;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -148,6 +153,28 @@ public interface BookingOrderMapper extends BaseMapper<BookingOrderEntity> {
             + "version = version + 1 WHERE id = #{bookingId} AND order_status = 'PENDING_CONFIRM'")
     int complete(@Param("bookingId") Long bookingId);
 
+    /**
+     * 履约异常恢复：EN_ROUTE / IN_SERVICE → IN_SERVICE（docs/modules/09 第 5.2 节）。
+     *
+     * @param bookingId 订单 ID
+     * @return 影响行数
+     */
+    @Update("UPDATE booking_order SET order_status = 'IN_SERVICE', version = version + 1 "
+            + "WHERE id = #{bookingId} AND order_status IN ('EN_ROUTE', 'IN_SERVICE')")
+    int resumeInService(@Param("bookingId") Long bookingId);
+
+    /**
+     * 运营强制完成：EN_ROUTE / IN_SERVICE / PENDING_CONFIRM → COMPLETED
+     * （docs/modules/09 第 17.3 节 force-complete）。
+     *
+     * @param bookingId 订单 ID
+     * @return 影响行数
+     */
+    @Update("UPDATE booking_order SET order_status = 'COMPLETED', completed_at = CURRENT_TIMESTAMP(3), "
+            + "version = version + 1 WHERE id = #{bookingId} AND order_status IN "
+            + "('EN_ROUTE', 'IN_SERVICE', 'PENDING_CONFIRM')")
+    int forceComplete(@Param("bookingId") Long bookingId);
+
     // ------------------------------------------------------------------
     // 派单回填 / 退款摘要
     // ------------------------------------------------------------------
@@ -168,6 +195,44 @@ public interface BookingOrderMapper extends BaseMapper<BookingOrderEntity> {
                                @Param("workerId") Long workerId);
 
     /**
+     * 摘要进入改派：PENDING_ACCEPT → REASSIGNING（派单模块拒单/超时后调用）。
+     *
+     * @param bookingId 订单 ID
+     * @return 影响行数
+     */
+    @Update("UPDATE booking_order SET assignment_status = 'REASSIGNING', version = version + 1 "
+            + "WHERE id = #{bookingId} AND assignment_status = 'PENDING_ACCEPT'")
+    int markAssignmentReassigning(@Param("bookingId") Long bookingId);
+
+    /**
+     * 摘要转人工处理：REASSIGNING → MANUAL_REQUIRED（自动改派无候选时调用）。
+     *
+     * @param bookingId 订单 ID
+     * @return 影响行数
+     */
+    @Update("UPDATE booking_order SET assignment_status = 'MANUAL_REQUIRED', "
+            + "version = version + 1 "
+            + "WHERE id = #{bookingId} AND assignment_status = 'REASSIGNING'")
+    int markAssignmentManualRequired(@Param("bookingId") Long bookingId);
+
+    /**
+     * 改派/手工派单落到新人员：摘要回到 PENDING_ACCEPT，更新当前人员与时段。
+     *
+     * @param bookingId    订单 ID
+     * @param workerId     新人员 ID
+     * @param workerSlotId 新人员时段 ID
+     * @return 影响行数
+     */
+    @Update("UPDATE booking_order SET assignment_status = 'PENDING_ACCEPT', "
+            + "current_worker_id = #{workerId}, worker_slot_id = #{workerSlotId}, "
+            + "version = version + 1 "
+            + "WHERE id = #{bookingId} AND assignment_status IN "
+            + "('PENDING_ACCEPT', 'REASSIGNING', 'MANUAL_REQUIRED')")
+    int markAssignmentPendingAccept(@Param("bookingId") Long bookingId,
+                                    @Param("workerId") Long workerId,
+                                    @Param("workerSlotId") Long workerSlotId);
+
+    /**
      * 应用退款：累加已退金额并推导支付摘要（全额退 REFUNDED，否则 PARTIALLY_REFUNDED）。
      *
      * <p>WHERE 保证累计退款不超过实付金额——并发两笔退款只有一个成功，
@@ -184,4 +249,102 @@ public interface BookingOrderMapper extends BaseMapper<BookingOrderEntity> {
             + "AND refunded_amount + #{refundAmount} <= paid_amount")
     int applyRefund(@Param("bookingId") Long bookingId,
                     @Param("refundAmount") BigDecimal refundAmount);
+
+    /**
+     * 统计人员已完成订单数（质量汇总重算用，docs/modules/11 第 8 节）。
+     *
+     * @param workerId 人员 ID
+     * @return 已完成订单数
+     */
+    @Select("SELECT COUNT(*) FROM booking_order "
+            + "WHERE current_worker_id = #{workerId} AND order_status = 'COMPLETED'")
+    long countCompletedByWorker(@Param("workerId") long workerId);
+
+    // ------------------------------------------------------------------
+    // 运营统计契约（docs/modules/13 第 7.1 节，只读聚合，不修改任何行）
+    // ------------------------------------------------------------------
+
+    /**
+     * 按订单创建日 + 区域分组统计（日报读模型与看板共用）。
+     *
+     * <p>completed / canceled 是"当日创建订单"的当前终态计数，重算日报时随状态刷新。</p>
+     *
+     * @param from 起始日期（含）
+     * @param to   结束日期（含）
+     * @return 分组统计行
+     */
+    @Select("SELECT DATE(created_at) AS statDate, service_area_id AS serviceAreaId, "
+            + "COUNT(*) AS total, "
+            + "SUM(order_status = 'COMPLETED') AS completed, "
+            + "SUM(order_status = 'CANCELED') AS canceled "
+            + "FROM booking_order "
+            + "WHERE created_at >= #{from} AND created_at < DATE_ADD(#{to}, INTERVAL 1 DAY) "
+            + "GROUP BY statDate, service_area_id")
+    List<BookingDailyStatRow> selectCreatedDailyStats(@Param("from") LocalDate from,
+                                                      @Param("to") LocalDate to);
+
+    /**
+     * 按支付完成日 + 区域分组统计实付笔数与金额（paid_at 归属）。
+     *
+     * @param from 起始日期（含）
+     * @param to   结束日期（含）
+     * @return 分组金额统计行
+     */
+    @Select("SELECT DATE(paid_at) AS statDate, service_area_id AS serviceAreaId, "
+            + "COUNT(*) AS cnt, SUM(paid_amount) AS amount "
+            + "FROM booking_order "
+            + "WHERE paid_at IS NOT NULL AND paid_at >= #{from} AND paid_at < DATE_ADD(#{to}, INTERVAL 1 DAY) "
+            + "GROUP BY statDate, service_area_id")
+    List<BookingPaidStatRow> selectPaidDailyStats(@Param("from") LocalDate from,
+                                                  @Param("to") LocalDate to);
+
+    /**
+     * 运营看板"今日"计数（创建日 = 统计日的订单）。
+     *
+     * <p>SUM 布尔在空集合下返回 NULL，因此返回 Long 行由应用层兜 0。</p>
+     *
+     * @param areaIds 区域过滤；null 或空 = 不限区域
+     * @param date    统计日期
+     * @return 计数行
+     */
+    @Select("<script>SELECT COUNT(*) AS total, "
+            + "SUM(order_status = 'PENDING_PAYMENT') AS pendingPayment, "
+            + "SUM(order_status = 'COMPLETED') AS completed, "
+            + "SUM(order_status = 'CANCELED') AS canceled "
+            + "FROM booking_order "
+            + "WHERE created_at &gt;= #{date} AND created_at &lt; DATE_ADD(#{date}, INTERVAL 1 DAY) "
+            + "<if test='areaIds != null and areaIds.size() > 0'>"
+            + "AND service_area_id IN "
+            + "<foreach item='id' collection='areaIds' open='(' separator=',' close=')'>#{id}</foreach>"
+            + "</if></script>")
+    BookingTodayStatRow selectTodayStat(@Param("areaIds") Collection<Long> areaIds,
+                                        @Param("date") LocalDate date);
+
+    /**
+     * 订单导出行（docs/modules/13 第 11 节）。
+     *
+     * <p>不含联系人 / 地址等隐私列；limit 硬上限防止大范围导出。</p>
+     *
+     * @param areaIds 区域过滤；null 或空 = 不限区域
+     * @param from    创建起始日期（含）
+     * @param to      创建结束日期（含）
+     * @param limit   最大行数
+     * @return 导出行
+     */
+    @Select("<script>SELECT order_no AS orderNo, service_area_id AS serviceAreaId, "
+            + "service_name_snapshot AS serviceName, order_status AS orderStatus, "
+            + "payment_status AS paymentStatus, appointment_date AS appointmentDate, "
+            + "payable_amount AS payableAmount, paid_amount AS paidAmount, "
+            + "refunded_amount AS refundedAmount, created_at AS createdAt "
+            + "FROM booking_order "
+            + "WHERE created_at &gt;= #{from} AND created_at &lt; DATE_ADD(#{to}, INTERVAL 1 DAY) "
+            + "<if test='areaIds != null and areaIds.size() > 0'>"
+            + "AND service_area_id IN "
+            + "<foreach item='id' collection='areaIds' open='(' separator=',' close=')'>#{id}</foreach>"
+            + "</if>"
+            + "ORDER BY id ASC LIMIT #{limit}</script>")
+    List<BookingExportRow> selectExportRows(@Param("areaIds") Collection<Long> areaIds,
+                                            @Param("from") LocalDate from,
+                                            @Param("to") LocalDate to,
+                                            @Param("limit") int limit);
 }
